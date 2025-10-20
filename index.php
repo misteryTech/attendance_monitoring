@@ -90,7 +90,7 @@
   <!-- ======= Hero Section ======= -->
   <section id="hero">
     <div class="container text-white">
-      <h1 class="fw-bold display-4 mb-3">Attendance Monitoring System</h1>
+      <h1 class="fw-bold display-4 mb-3">AURA</h1>
       <p class="lead mb-5">Track attendance efficiently with real-time insights and secure dashboards.</p>
       <div class="hero-btns">
         <a href="login.php" class="btn btn-light btn-lg shadow px-4 py-2">

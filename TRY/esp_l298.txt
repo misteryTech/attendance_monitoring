@@ -1,0 +1,264 @@
+#include <BluetoothSerial.h>
+#include <ESP32Servo.h>  // Include the Servo library
+#include <WiFi.h>         // Include Wi-Fi library
+#include <WebServer.h>    // Include WebServer for HTTP interface
+
+// Create BluetoothSerial object
+BluetoothSerial SerialBT;
+
+// Define motor pins for L298 motor driver
+const int motorPin1 = 5;   // IN1 pin of L298 (Motor A)
+const int motorPin2 = 18;  // IN2 pin of L298 (Motor A)
+const int motorPin3 = 19;  // IN3 pin of L298 (Motor B)
+const int motorPin4 = 21;  // IN4 pin of L298 (Motor B)
+const int enablePinA = 23; // ENA pin of L298 (Motor A Enable)
+const int enablePinB = 22; // ENB pin of L298 (Motor B Enable)
+
+// Define the servo pin
+const int servoPin = 12;  // Pin connected to the servo
+
+// Define the relay pin
+const int relayPin = 13;  // Pin connected to the relay
+
+// Wi-Fi credentials for ESP32 hotspot
+const char* ssid = "MPC_Robot_Hotspot";  // Hotspot name
+const char* password = "123456789";         // Hotspot password
+
+// Create WebServer object on port 80
+WebServer server(80);
+
+// Mode selection flags
+bool isAutoMode = false;
+bool isManualMode = false;
+bool servoState = false; // false = 90 degrees, true = 190 degrees
+bool relayState = false; // false = relay off, true = relay on
+
+// Create servo object
+Servo myServo;
+
+void setup() {
+  // Start the serial communication with the PC
+  Serial.begin(115200);
+  // Start Bluetooth Serial
+  SerialBT.begin("MPC Robot Control"); // Bluetooth device name
+
+  // Set motor pins as output
+  pinMode(motorPin1, OUTPUT);
+  pinMode(motorPin2, OUTPUT);
+  pinMode(motorPin3, OUTPUT);
+  pinMode(motorPin4, OUTPUT);
+  pinMode(enablePinA, OUTPUT); // Set ENA pin as output
+  pinMode(enablePinB, OUTPUT); // Set ENB pin as output
+
+  // Set relay pin as output
+  pinMode(relayPin, OUTPUT);
+
+  // Enable motors (set ENA and ENB HIGH to allow motors to run)
+  digitalWrite(enablePinA, HIGH); // Motor A is enabled by default
+  digitalWrite(enablePinB, HIGH); // Motor B is enabled by default
+
+  // Initialize servo to 90 degrees
+  myServo.attach(servoPin); // Attach the servo to the specified pin
+  myServo.write(90); // Set initial position to 90 degrees
+
+  // Ensure the relay is off initially
+  digitalWrite(relayPin, LOW); 
+
+  Serial.println("Motor control, Servo control, and Relay control via Bluetooth started...");
+
+  // Set up the ESP32 as an Access Point (Hotspot)
+  WiFi.softAP(ssid, password);  // Start Wi-Fi Access Point
+  Serial.println("Wi-Fi hotspot started.");
+  Serial.println("Connect to Wi-Fi with the following credentials:");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("Password: ");
+  Serial.println(password);
+
+  // Print the IP address of the ESP32 (the device connected to it can use this IP to access the web interface)
+  Serial.print("ESP32 IP Address: ");
+  Serial.println(WiFi.softAPIP());  // Get IP address of the ESP32 in Access Point mode
+
+  // Define the routes for the web server
+  server.on("/", HTTP_GET, [](){
+    String html = "<html><body><h1>MPC Robot Control via Web Interface</h1>";
+    html += "<p><a href=\"/forward\">Forward</a></p>";
+    html += "<p><a href=\"/backward\">Backward</a></p>";
+    html += "<p><a href=\"/left\">Left</a></p>";
+    html += "<p><a href=\"/right\">Right</a></p>";
+    html += "<p><a href=\"/stop\">Stop</a></p>";
+    html += "<p><a href=\"/servo\">Toggle Servo</a></p>";
+    html += "<p><a href=\"/relay\">Toggle Relay</a></p>";
+    html += "</body></html>";
+    server.send(200, "text/html", html);
+    Serial.println("Web interface accessed.");
+  });
+
+  // Define other routes for motor and servo controls
+  server.on("/forward", HTTP_GET, [](){ 
+    moveForward(); 
+    Serial.println("Web command: Moving Forward");
+    server.send(200, "text/html", "Moving Forward"); 
+  });
+  server.on("/backward", HTTP_GET, [](){ 
+    moveBackward(); 
+    Serial.println("Web command: Moving Backward");
+    server.send(200, "text/html", "Moving Backward"); 
+  });
+  server.on("/left", HTTP_GET, [](){ 
+    turnLeft(); 
+    Serial.println("Web command: Turning Left");
+    server.send(200, "text/html", "Turning Left"); 
+  });
+  server.on("/right", HTTP_GET, [](){ 
+    turnRight(); 
+    Serial.println("Web command: Turning Right");
+    server.send(200, "text/html", "Turning Right"); 
+  });
+  server.on("/stop", HTTP_GET, [](){ 
+    stopMotors(); 
+    Serial.println("Web command: Motors Stopped");
+    server.send(200, "text/html", "Motors Stopped"); 
+  });
+  server.on("/servo", HTTP_GET, [](){
+    if (servoState) {
+      myServo.write(0); // Move servo to 90 degrees
+    } else {
+      myServo.write(190); // Move servo to 190 degrees
+    }
+    servoState = !servoState;  // Toggle the servo state
+    Serial.println("Web command: Servo toggled");
+    server.send(200, "text/html", "Servo toggled");
+  });
+  server.on("/relay", HTTP_GET, [](){
+    if (relayState) {
+      digitalWrite(relayPin, LOW); // Turn off relay
+    } else {
+      digitalWrite(relayPin, HIGH); // Turn on relay
+    }
+    relayState = !relayState;  // Toggle the relay state
+    Serial.println("Web command: Relay toggled");
+    server.send(200, "text/html", "Relay toggled");
+  });
+
+  // Start the web server
+  server.begin();
+}
+
+void loop() {
+  if (SerialBT.available()) {  // Check if data is received from Bluetooth
+    char receivedChar = SerialBT.read();  // Read the received character
+    
+    if (receivedChar == '0') {  // Auto Mode
+      isAutoMode = true;
+      isManualMode = false;
+      Serial.println("Auto Mode Activated");
+    } 
+    else if (receivedChar == '1') {  // Manual Mode
+      isManualMode = true;
+      isAutoMode = false;
+      Serial.println("Manual Mode Activated");
+    }
+    
+    // Manual control for motor direction
+    if (isManualMode) {
+      if (receivedChar == '2') {  // Forward
+        moveForward();
+        Serial.println("Manual command: Moving Forward");
+      } 
+      else if (receivedChar == '3') {  // Reverse
+        moveBackward();
+        Serial.println("Manual command: Moving Backward");
+      } 
+      else if (receivedChar == '4') {  // Left
+        turnLeft();
+        Serial.println("Manual command: Turning Left");
+      } 
+      else if (receivedChar == '5') {  // Right
+        turnRight();
+        Serial.println("Manual command: Turning Right");
+      } 
+      else if (receivedChar == '6') {  // Stop
+        stopMotors();
+        Serial.println("Manual command: Motors Stopped");
+      } 
+      else if (receivedChar == '7') {  // Button 7 press for servo control
+        if (servoState) {
+          myServo.write(0); // Move servo to 90 degrees
+          Serial.println("Manual command: Servo moved to 90 degrees");
+        } else {
+          myServo.write(190); // Move servo to 190 degrees
+          Serial.println("Manual command: Servo moved to 190 degrees");
+        }
+        servoState = !servoState;  // Toggle the servo state
+      } 
+      else if (receivedChar == '8') {  // Button 8 press for relay control
+        if (relayState) {
+          digitalWrite(relayPin, LOW); // Turn off relay
+          Serial.println("Manual command: Relay turned OFF");
+        } else {
+          digitalWrite(relayPin, HIGH); // Turn on relay
+          Serial.println("Manual command: Relay turned ON");
+        }
+        relayState = !relayState;  // Toggle the relay state
+      }
+    }
+    
+    // Auto Mode logic (can be customized)
+    if (isAutoMode) {
+      // Example of Auto Mode: Motor moves forward for 5 seconds, then stops
+      moveForward();
+      delay(5000);
+      stopMotors();
+      delay(2000);
+      moveBackward();
+      delay(5000);
+      stopMotors();
+      delay(2000);
+    }
+  }
+
+  server.handleClient();  // Handle Wi-Fi web server requests
+
+  delay(20);  // Small delay to avoid high CPU usage
+}
+
+// Function to move the motor forward
+void moveForward() {
+  digitalWrite(motorPin1, HIGH);
+  digitalWrite(motorPin2, LOW);
+  digitalWrite(motorPin3, HIGH);
+  digitalWrite(motorPin4, LOW);
+}
+
+// Function to move the motor backward
+void moveBackward() {
+  digitalWrite(motorPin1, LOW);
+  digitalWrite(motorPin2, HIGH);
+  digitalWrite(motorPin3, LOW);
+  digitalWrite(motorPin4, HIGH);
+}
+
+// Function to turn the motor left
+void turnLeft() {
+  digitalWrite(motorPin1, LOW);
+  digitalWrite(motorPin2, HIGH);
+  digitalWrite(motorPin3, HIGH);
+  digitalWrite(motorPin4, LOW);
+}
+
+// Function to turn the motor right
+void turnRight() {
+  digitalWrite(motorPin1, HIGH);
+  digitalWrite(motorPin2, LOW);
+  digitalWrite(motorPin3, LOW);
+  digitalWrite(motorPin4, HIGH);
+}
+
+// Function to stop the motors
+void stopMotors() {
+  digitalWrite(motorPin1, LOW);
+  digitalWrite(motorPin2, LOW);
+  digitalWrite(motorPin3, LOW);
+  digitalWrite(motorPin4, LOW);
+}

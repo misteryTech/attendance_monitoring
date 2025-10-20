@@ -107,6 +107,15 @@
 
 
 
+      <li class="nav-item">
+        <a class="nav-link" href="schedule_request.php">
+          <i class="bi bi-camera"></i>
+          <span>Request Schedule</span>
+        </a>
+      </li><!-- End Dashboard Nav -->
+
+
+
 
     </ul>
 
